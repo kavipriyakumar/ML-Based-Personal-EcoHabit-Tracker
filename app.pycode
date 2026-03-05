@@ -1,0 +1,148 @@
+from flask import Flask, render_template_string, request, jsonify
+import os
+import requests
+from activity_model import detect_activity
+from twilio.rest import Client
+
+app = Flask(__name__)
+
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+ESP_IP = "http://172.29.43.121"
+
+last_activity = "No Data"
+light_status = "OFF"
+
+# ================== TWILIO CONFIG ==================
+ACCOUNT_SID = ""
+AUTH_TOKEN = ""
+TWILIO_NUMBER = "+1"     # Twilio number
+MY_NUMBER = "+91"        # Your verified number
+
+twilio_client = Client(ACCOUNT_SID, AUTH_TOKEN)
+
+HTML_PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Smart Activity Dashboard</title>
+    <style>
+        body{
+            background:linear-gradient(135deg,#1e3c72,#2a5298);
+            font-family:Arial;
+            text-align:center;
+            color:white;
+        }
+        .card{
+            background:white;
+            color:black;
+            width:300px;
+            margin:20px auto;
+            padding:20px;
+            border-radius:15px;
+            box-shadow:0px 5px 15px rgba(0,0,0,0.3);
+        }
+        .on{
+            color:green;
+            font-weight:bold;
+            font-size:22px;
+        }
+        .off{
+            color:red;
+            font-weight:bold;
+            font-size:22px;
+        }
+        button{
+            padding:10px 20px;
+            border:none;
+            border-radius:8px;
+            background:#ff9800;
+            color:white;
+            font-size:16px;
+            cursor:pointer;
+        }
+    </style>
+</head>
+<body>
+
+<h1>🏠 PERSONAL ECOHABIT TRACKING SYSTEM</h1>
+
+<div class="card">
+    <h2>Upload Image</h2>
+    <form method="POST" action="/upload" enctype="multipart/form-data">
+        <input type="file" name="image" required><br><br>
+        <button type="submit">Detect Activity</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2>Detected Activity</h2>
+    <p style="font-size:20px;">{{ activity }}</p>
+</div>
+
+<div class="card">
+    <h2>Light And Fans Status</h2>
+    {% if light == "ON" %}
+        <p class="on">💡ON</p>
+    {% else %}
+        <p class="off">💡OFF</p>
+    {% endif %}
+</div>
+
+</body>
+</html>
+"""
+
+@app.route("/")
+def index():
+    return render_template_string(HTML_PAGE, activity=last_activity, light=light_status)
+
+@app.route("/upload", methods=["POST"])
+def upload():
+    global last_activity, light_status
+
+    file = request.files["image"]
+    filepath = os.path.join(UPLOAD_FOLDER, file.filename)
+    file.save(filepath)
+
+    activity = detect_activity(filepath)
+    last_activity = activity
+
+    # ===== LIGHT LOGIC =====
+    if activity in ["Sitting", "Standing"]:
+        light_status = "ON"
+    else:
+        light_status = "OFF"
+
+    # ===== SEND DATA TO ESP =====
+    try:
+        requests.post(f"{ESP_IP}/activity", data={
+            "activity": activity,
+            "light": light_status
+        })
+    except:
+        print("⚠ Could not send to ESP")
+
+    # ===== SEND TWILIO SMS ALERT =====
+    try:
+        message = twilio_client.messages.create(
+            body=f"EcoHabit Alert 🚨\nActivity: {activity}\nAppliances: {light_status}",
+            from_=TWILIO_NUMBER,
+            to=MY_NUMBER
+        )
+        print("✅ SMS Sent Successfully")
+    except Exception as e:
+        print("⚠ Twilio Error:", e)
+
+    return render_template_string(HTML_PAGE, activity=last_activity, light=light_status)
+
+@app.route("/get_activity")
+def get_activity():
+    return jsonify({
+        "activity": last_activity,
+        "light": light_status
+    })
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
