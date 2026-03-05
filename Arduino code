@@ -1,0 +1,206 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
+#include <DHT.h>
+
+// ================== PINS ==================
+#define DHTPIN D8
+#define DHTTYPE DHT11
+#define PIR_PIN D5
+#define MQ135_PIN D1
+#define LDR_PIN A0
+
+DHT dht(DHTPIN, DHTTYPE);
+
+// ================== WIFI ==================
+const char* ssid = "Kavi";
+const char* password = "theriyathu";
+
+// ================== THINGSPEAK ==================
+const char* tsServer = "http://api.thingspeak.com/update";
+const char* tsAPIKey = "5G3QPKI9SQW7MQOF";
+
+WiFiServer server(80);
+WiFiClient client;
+
+// ================== VARIABLES ==================
+float temp = 0;
+int ldr = 0, mq135 = 0, pir = 0;
+
+String cameraActivity = "None";
+String applianceStatus = "OFF";
+
+// ================== WIFI CONNECT FUNCTION ==================
+void connectWiFi() {
+
+  Serial.println("\n🌐 Connecting to WiFi...");
+  WiFi.begin(ssid, password);
+
+  int retry = 0;
+
+  while (WiFi.status() != WL_CONNECTED && retry < 20) {
+    delay(500);
+    Serial.print(".");
+    retry++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n✅ WiFi Connected Successfully!");
+    Serial.print("📡 ESP IP Address: http://");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\n❌ WiFi Connection Failed!");
+  }
+}
+
+// ================== SETUP ==================
+void setup() {
+
+  Serial.begin(115200);
+  delay(1000);
+
+  Serial.println("\n===== SMART IOT SYSTEM STARTING =====");
+
+  dht.begin();
+  pinMode(PIR_PIN, INPUT);
+  pinMode(MQ135_PIN, INPUT);
+
+  connectWiFi();
+
+  server.begin();
+  Serial.println("🌍 Web Server Started");
+}
+
+// ================== LOOP ==================
+void loop() {
+
+  // Reconnect WiFi if disconnected
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("⚠ WiFi Lost. Reconnecting...");
+    connectWiFi();
+  }
+
+  handleWebServer();
+  readSensors();
+  uploadThingSpeak();
+
+  // 🔥 Print IP Every Cycle
+  Serial.print("📡 Current IP: http://");
+  Serial.println(WiFi.localIP());
+
+  delay(15000);
+}
+
+// ================== HANDLE WEB ==================
+void handleWebServer() {
+
+  WiFiClient webClient = server.available();
+  if (!webClient) return;
+
+  String request = webClient.readStringUntil('\r');
+  webClient.flush();
+
+  if (request.indexOf("POST /activity") >= 0) {
+
+    while (webClient.available()) {
+      String body = webClient.readString();
+
+      int index = body.indexOf("activity=");
+      if (index >= 0) {
+
+        cameraActivity = body.substring(index + 9);
+        cameraActivity.trim();
+
+        if (cameraActivity == "Sitting" || cameraActivity == "Standing")
+          applianceStatus = "ON";
+        else
+          applianceStatus = "OFF";
+
+        Serial.println("📷 Camera Activity: " + cameraActivity);
+        Serial.println("💡 Appliance Status: " + applianceStatus);
+      }
+    }
+
+    webClient.println("HTTP/1.1 200 OK");
+    webClient.println("Connection: close");
+    webClient.println();
+    webClient.stop();
+    return;
+  }
+
+  if (request.indexOf("GET / ") >= 0) {
+    webClient.println("HTTP/1.1 200 OK");
+    webClient.println("Content-Type: text/html");
+    webClient.println("Connection: close");
+    webClient.println();
+    webClient.println(generateHTML());
+    webClient.stop();
+  }
+}
+
+// ================== SENSOR READ ==================
+void readSensors() {
+
+  temp = dht.readTemperature();
+  if (isnan(temp)) temp = 30.0;
+
+  ldr = analogRead(LDR_PIN);
+  mq135 = digitalRead(MQ135_PIN);
+  pir = digitalRead(PIR_PIN);
+
+  Serial.println("\n------ SENSOR DATA ------");
+  Serial.println("🌡 Temperature: " + String(temp) + " °C");
+  Serial.println("💡 LDR: " + String(ldr));
+  Serial.println("💨 Gas: " + String(mq135));
+  Serial.println("🚶 PIR: " + String(pir));
+  Serial.println("-------------------------");
+}
+
+// ================== THINGSPEAK ==================
+void uploadThingSpeak() {
+
+  HTTPClient http;
+
+  String url = String(tsServer) +
+               "?api_key=" + tsAPIKey +
+               "&field1=" + String(temp) +
+               "&field2=" + String(ldr) +
+               "&field3=" + String(mq135) +
+               "&field4=" + String(pir);
+
+  http.begin(client, url);
+  int httpCode = http.GET();
+
+  Serial.print("📤 ThingSpeak Response: ");
+  Serial.println(httpCode);
+
+  if (httpCode == 200)
+    Serial.println("✅ Upload Successful");
+  else
+    Serial.println("❌ Upload Failed");
+
+  http.end();
+}
+
+// ================== DASHBOARD ==================
+String generateHTML() {
+
+  String statusColor = (applianceStatus == "ON") ? "#2ecc71" : "#ff4c4c";
+
+  String page = "<html><head><title>Smart IoT</title></head><body style='background:#111;color:white;text-align:center;'>";
+  page += "<h1>PERSONAL ECOHABIT TRACKER 🌍</h1>";
+
+  page += "<h3>Temperature: " + String(temp) + " °C</h3>";
+  page += "<h3>LDR: " + String(ldr) + "</h3>";
+  page += "<h3>Gas: " + String(mq135) + "</h3>";
+  page += "<h3>PIR: " + String(pir == HIGH ? "Motion" : "No Motion") + "</h3>";
+  page += "<h3>Camera Activity: " + cameraActivity + "</h3>";
+
+  page += "<h2 style='color:" + statusColor + ";'>";
+  page += (applianceStatus == "ON") ? "💡 Appliances ON" : "🌙 Appliances OFF";
+  page += "</h2>";
+
+  page += "<script>setTimeout(()=>{location.reload();},5000);</script>";
+  page += "</body></html>";
+
+  return page;
+}
